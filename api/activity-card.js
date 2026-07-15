@@ -53,13 +53,49 @@ const DEFAULT_COLORS = {
     muted: '6e7681',
 };
 
-function color(query, key) {
+// Text defaults when the card is transparent: dark text for light mode,
+// light text for dark mode (switched via prefers-color-scheme).
+const ADAPTIVE_COLORS = {
+    accent: { light: '#F51010', dark: '#F51010' },
+    title: { light: '#1f2328', dark: '#ffffff' },
+    text: { light: '#57606a', dark: '#c9d1d9' },
+    muted: { light: '#848d97', dark: '#6e7681' },
+};
+
+function parseColor(query, key) {
     const val = String(query?.[key] ?? '');
     if (val === 'transparent' || val === 'none') return 'none';
     if (/^[0-9a-fA-F]{3}$/.test(val) || /^[0-9a-fA-F]{6}$/.test(val) || /^[0-9a-fA-F]{8}$/.test(val)) {
         return `#${val}`;
     }
-    return `#${DEFAULT_COLORS[key]}`;
+    return null;
+}
+
+function buildTheme(query) {
+    const bg = parseColor(query, 'bg') ?? `#${DEFAULT_COLORS.bg}`;
+    const border = parseColor(query, 'border') ?? `#${DEFAULT_COLORS.border}`;
+    const transparent = bg === 'none';
+
+    const rules = [];
+    const darkRules = [];
+    for (const key of ['accent', 'title', 'text', 'muted']) {
+        const explicit = parseColor(query, key);
+        if (explicit) {
+            rules.push(`.${key}{fill:${explicit}}`);
+        } else if (transparent) {
+            rules.push(`.${key}{fill:${ADAPTIVE_COLORS[key].light}}`);
+            darkRules.push(`.${key}{fill:${ADAPTIVE_COLORS[key].dark}}`);
+        } else {
+            rules.push(`.${key}{fill:#${DEFAULT_COLORS[key]}}`);
+        }
+    }
+    const colorStyle = `<style>${rules.join('')}${darkRules.length ? `@media(prefers-color-scheme:dark){${darkRules.join('')}}` : ''}</style>`;
+    return { bg, border, colorStyle };
+}
+
+function truncate(str, max) {
+    const s = String(str || '');
+    return s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s;
 }
 
 function elapsed(startMs) {
@@ -74,16 +110,11 @@ export default async function handler(req, res) {
     const stored = await kv.get('latest_activity');
     const act = stored?.active_activity;
 
-    const bg = color(req.query, 'bg');
-    const border = color(req.query, 'border');
-    const accent = color(req.query, 'accent');
-    const title = color(req.query, 'title');
-    const text = color(req.query, 'text');
-    const muted = color(req.query, 'muted');
+    const { bg, border, colorStyle } = buildTheme(req.query);
 
-    const name = escapeXml(act?.name || '');
-    const details = escapeXml(act?.details || '');
-    const state = escapeXml(act?.state || '');
+    const name = escapeXml(truncate(act?.name, 38));
+    const details = escapeXml(truncate(act?.details, 28));
+    const state = escapeXml(truncate(act?.state, 36));
     const imageUrl = resolveImageUrl(act?.assets?.large_image, act?.application_id);
     const image = escapeXml(await fetchImageAsDataUri(imageUrl));
     const time = escapeXml(elapsed(act?.timestamps?.start));
@@ -92,19 +123,21 @@ export default async function handler(req, res) {
         ? `
 <svg width="400" height="120" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
   ${FONT_STYLE}
+  ${colorStyle}
   <rect width="400" height="120" rx="12" fill="${bg}" stroke="${border}"/>
   ${image ? `<clipPath id="art"><rect x="16" y="16" width="88" height="88" rx="8"/></clipPath>
   <image href="${image}" x="16" y="16" width="88" height="88" preserveAspectRatio="xMidYMid slice" clip-path="url(#art)"/>` : ''}
-  <text x="${image ? 120 : 20}" y="34" font-family="Google Sans, Segoe UI, sans-serif" font-size="12" fill="${accent}">${name}</text>
-  <text x="${image ? 120 : 20}" y="58" font-family="Google Sans, Segoe UI, sans-serif" font-size="17" fill="${title}" font-weight="bold">${details}</text>
-  <text x="${image ? 120 : 20}" y="80" font-family="Google Sans, Segoe UI, sans-serif" font-size="13" fill="${text}">${state}</text>
-  <text x="${image ? 120 : 20}" y="100" font-family="Google Sans, Segoe UI, sans-serif" font-size="11" fill="${muted}">${time}</text>
+  <text x="${image ? 120 : 20}" y="34" font-family="Google Sans, Segoe UI, sans-serif" font-size="12" class="accent">${name}</text>
+  <text x="${image ? 120 : 20}" y="58" font-family="Google Sans, Segoe UI, sans-serif" font-size="17" class="title" font-weight="bold">${details}</text>
+  <text x="${image ? 120 : 20}" y="80" font-family="Google Sans, Segoe UI, sans-serif" font-size="13" class="text">${state}</text>
+  <text x="${image ? 120 : 20}" y="100" font-family="Google Sans, Segoe UI, sans-serif" font-size="11" class="muted">${time}</text>
 </svg>`.trim()
         : `
 <svg width="400" height="120" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
   ${FONT_STYLE}
+  ${colorStyle}
   <rect width="400" height="120" rx="12" fill="${bg}" stroke="${border}"/>
-  <text x="20" y="65" font-family="Google Sans, Segoe UI, sans-serif" font-size="14" fill="${muted}">No active activity right now</text>
+  <text x="20" y="65" font-family="Google Sans, Segoe UI, sans-serif" font-size="14" class="muted">No active activity right now</text>
 </svg>`.trim();
 
     res.setHeader('Content-Type', 'image/svg+xml');
